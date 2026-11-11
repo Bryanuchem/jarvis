@@ -8,7 +8,7 @@ const object = (properties = {}, required = []) => ({
 const str = (description, maxLength = 1024) => ({ type: 'string', description, maxLength })
 const num = (description) => ({ type: 'number', description })
 const en = (values, description) => ({ type: 'string', enum: values, description })
-const tab = { oneOf: [{ type: 'integer' }, { type: 'string', maxLength: 20 }], description: 'Optional numeric tab ID obtained from browser_tabs.' }
+const tab = { oneOf: [{ type: 'integer' }, { type: 'string', maxLength: 128 }], description: 'Optional tab ID from browser_tabs, or a numeric tab index.' }
 
 const CATALOG = [
   {

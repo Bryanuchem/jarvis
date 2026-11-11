@@ -17,6 +17,7 @@
 
 import { WebSocketServer } from 'ws'
 import { query } from '@anthropic-ai/claude-agent-sdk'
+import { createCodexSession } from './codex.mjs'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer } from './chrome.mjs'
@@ -157,6 +158,9 @@ function hostAllowed(host) {
  */
 const ALLOW_WRITES =
   process.env.JARVIS_ALLOW_WRITES === '1' || process.argv.includes('--writes')
+if (process.env.JARVIS_AGENT === 'codex' && ALLOW_WRITES) {
+  throw new Error('Codex beta is read-only. Remove --writes and JARVIS_ALLOW_WRITES=1.')
+}
 
 /**
  * Built-in capabilities to leave out entirely: `browser` (the user's own
@@ -177,7 +181,11 @@ const DISABLED = new Set(
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
  * — claude-sonnet-5 is noticeably snappier on camera if Opus feels slow.
  */
-const MODEL = process.env.JARVIS_MODEL ?? 'claude-opus-5'
+const AGENT = process.env.JARVIS_AGENT ?? 'claude'
+if (!['claude', 'codex'].includes(AGENT)) {
+  throw new Error(`Unknown JARVIS_AGENT: ${AGENT}. Use claude or codex.`)
+}
+const MODEL = process.env.JARVIS_MODEL ?? (AGENT === 'codex' ? undefined : 'claude-opus-5')
 
 /**
  * How hard the model thinks before answering.
@@ -483,10 +491,10 @@ const PROMPT_TOOLS = `Using tools:
 
 const SYSTEM_PROMPT = [
   PROMPT_CORE,
-  PROMPT_BLADES,
-  DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
-  DISABLED.has('browser') ? '' : PROMPT_BROWSER,
-  DISABLED.has('camera') ? '' : PROMPT_EYES,
+  AGENT === 'codex' ? '' : PROMPT_BLADES,
+  AGENT === 'codex' || DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
+  AGENT === 'codex' || DISABLED.has('browser') ? '' : PROMPT_BROWSER,
+  AGENT === 'codex' || DISABLED.has('camera') ? '' : PROMPT_EYES,
   PROMPT_TOOLS,
 ].join('')
 
@@ -1086,7 +1094,7 @@ if (!LOOPBACK) {
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
-console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
+console.log(`[jarvis] agent ${AGENT} · model ${MODEL ?? 'Codex default'} · effort ${EFFORT}`)
 console.log(
   `[jarvis] MCP servers from config: ${Object.keys(MCP_SERVERS).join(', ') || 'none'}` +
     (ACCOUNT_CONNECTORS ? ' · account connectors ON' : ' · account connectors off'),
@@ -1100,7 +1108,7 @@ console.log(
 // at the tool boundary from one that is broken, and this is the one place the
 // difference can be stated before anybody asks a question that depends on it.
 if (DISABLED.size) console.log(`[jarvis] disabled: ${[...DISABLED].join(', ')}`)
-if (!DISABLED.has('browser')) void chromeAvailable().then((ok) => {
+if (AGENT === 'claude' && !DISABLED.has('browser')) void chromeAvailable().then((ok) => {
   console.log(
     ok
       ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need JARVIS_ALLOW_WRITES=1)'}`
@@ -1132,7 +1140,7 @@ wss.on('connection', (socket) => {
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
+    JSON.stringify({ type: 'ready', servers: AGENT === 'codex' ? [] : Object.keys(MCP_SERVERS) }),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */
@@ -1289,7 +1297,18 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
-  const session = query({
+  const session = AGENT === 'codex'
+    ? createCodexSession({
+        prompt: userMessages(),
+        options: {
+          cwd: WORKSPACE,
+          systemPrompt: SYSTEM_PROMPT,
+          model: MODEL,
+          effort: EFFORT,
+          allowWrites: ALLOW_WRITES,
+        },
+      })
+    : query({
     prompt: userMessages(),
     options: {
       // Everything Claude Code has configured, plus the HUD as an in-process

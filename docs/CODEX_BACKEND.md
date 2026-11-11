@@ -128,7 +128,11 @@ Sensitive browser and camera actions are approved by the UI, not by the model.
 
 - Codex's read-only sandbox covers its built-in operations. It does NOT
   automatically confine unrelated MCP servers configured in the user's Codex
-  installation. Disable or audit them before use. Avoid sensitive accounts.
+  installation. The bridge checks the user's Codex config and **refuses to
+  start** if it finds existing MCP servers. Disable those servers for this
+  environment, or explicitly set JARVIS_CODEX_TRUST_EXISTING_MCP=1 only after
+  personally auditing their permissions. This is a guard, not a complete
+  Codex configuration parser; avoid sensitive accounts.
 - Chrome's debugging port itself is powerful. Use a dedicated disposable
   profile, loopback binding and a trusted machine. Other local processes with
   access to the CDP port may be able to control it independently of Jarvis.

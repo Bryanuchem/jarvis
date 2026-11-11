@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createCodexSession } from '../bridge/codex.mjs'
+import { createCodexSession, assertMcpIsolation } from '../bridge/codex.mjs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 async function* messages(...items) {
   for (const content of items) {
@@ -108,4 +111,20 @@ test('cancels an active turn and supports a subsequent question', async () => {
   assert.equal((await output.next()).value.subtype, 'error_during_execution')
   assert.equal((await output.next()).value.event.delta.text, 'Next')
   assert.equal((await output.next()).value.subtype, 'success')
+})
+
+
+test('rejects inherited Codex MCP servers unless the user explicitly trusts them', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'jarvis-mcp-isolation-'))
+  try {
+    writeFileSync(join(folder, 'config.toml'),
+      '[mcp_servers.github]\ncommand = "dangerous-agent"\n')
+    assert.throws(() => assertMcpIsolation({ home: folder, trusted: false }), /bypass the JARVIS approval gate/)
+    assert.doesNotThrow(() => assertMcpIsolation({ home: folder, trusted: true }))
+    const other = join(folder, 'empty')
+    mkdirSync(other)
+    assert.doesNotThrow(() => assertMcpIsolation({ home: other, trusted: false }))
+  } finally {
+    rmSync(folder, { recursive: true, force: true })
+  }
 })

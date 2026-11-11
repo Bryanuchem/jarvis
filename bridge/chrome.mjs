@@ -955,3 +955,57 @@ export function chromeServer({ allowWrites }) {
 export async function chromeAvailable() {
   return (await findSocket()) !== null
 }
+
+
+/**
+ * Codex MCP browser adapter. Reuses the same native Chrome transport and tab
+ * resolution as the original Claude tools. The independent gateway enforces
+ * opt-in and per-action approval BEFORE any call reaches here.
+ */
+export async function codexChromeTool(name, args = {}) {
+  switch (name) {
+    case 'browser_status': {
+      const available = await chromeAvailable()
+      return { content: [{ type: 'text', text: available
+        ? 'Browser connector is available.'
+        : 'Browser connector is not available. Start Chrome with its native extension.' }] }
+    }
+    case 'browser_tabs':
+      return forward('tabs_context_mcp', { needsTab: false })({ createIfEmpty: false })
+    case 'browser_read':
+      return forward('read_page')({
+        tabId: args.tabId, filter: 'all', max_chars: args.max_chars ?? 10000,
+      })
+    case 'browser_text':
+      return forward('get_page_text')({
+        tabId: args.tabId, max_chars: args.max_chars ?? 10000,
+      })
+    case 'browser_screenshot':
+      return forward('computer')({ action: 'screenshot', tabId: args.tabId })
+    case 'browser_scroll':
+      return forward('computer')({
+        action: 'scroll', scroll_direction: args.direction ?? 'down',
+        scroll_amount: args.amount ?? 3, coordinate: [400, 400], tabId: args.tabId,
+      })
+    case 'browser_navigate': {
+      const reply = await forward('navigate')({ url: args.url, tabId: args.tabId })
+      if (reply.isError) return reply
+      await settle(await resolveTab(args.tabId), args.url)
+      return reply
+    }
+    case 'browser_click':
+      return forward('computer')({
+        action: 'left_click', ref: args.ref, tabId: args.tabId,
+      })
+    case 'browser_type':
+      return forward('computer')({
+        action: 'type', text: args.text, tabId: args.tabId,
+      })
+    case 'browser_key':
+      return forward('computer')({
+        action: 'key', text: args.text, tabId: args.tabId,
+      })
+    default:
+      return { isError: true, content: [{ type: 'text', text: 'Unknown browser operation.' }] }
+  }
+}

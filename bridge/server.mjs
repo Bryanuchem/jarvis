@@ -19,6 +19,7 @@ import { WebSocketServer } from 'ws'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { createCodexSession } from './codex.mjs'
 import { createCodexGateway } from './codex-gateway.mjs'
+import { codexCdpTool } from './codex-cdp.mjs'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
 import { chromeAvailable, chromeServer, codexChromeTool } from './chrome.mjs'
@@ -43,7 +44,13 @@ const CODEX_FLAGS = {
   camera: process.env.JARVIS_CODEX_CAMERA === '1',
   actions: process.env.JARVIS_CODEX_ACTIONS === '1',
 }
-const CODEX_GATEWAY = createCodexGateway({ chrome: codexChromeTool })
+const CODEX_BROWSER_DRIVER = process.env.JARVIS_CODEX_BROWSER_DRIVER ?? 'cdp'
+if (!['cdp', 'native'].includes(CODEX_BROWSER_DRIVER)) {
+  throw new Error('JARVIS_CODEX_BROWSER_DRIVER must be cdp or native')
+}
+const CODEX_GATEWAY = createCodexGateway({
+  chrome: CODEX_BROWSER_DRIVER === 'native' ? codexChromeTool : codexCdpTool,
+})
 
 /**
  * Which interface to listen on. Loopback, unless you say otherwise.
@@ -1188,7 +1195,7 @@ wss.on('connection', (socket) => {
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: AGENT === 'codex' ? [] : Object.keys(MCP_SERVERS) }),
+    JSON.stringify({ type: 'ready', servers: AGENT === 'codex' ? ['jarvis'] : Object.keys(MCP_SERVERS) }),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */

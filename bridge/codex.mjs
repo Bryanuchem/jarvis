@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+
 /**
  * Codex SDK adapter for the JARVIS WebSocket bridge (experimental).
  * Native Claude-only MCP tools are not exposed through this adapter.
@@ -38,7 +40,39 @@ export function createCodexSession({ prompt, options = {}, codexFactory } = {}) 
       if (started) throw new Error('Codex session output may only be consumed once')
       started = true
       const CodexClass = codexFactory ?? (await import('@openai/codex-sdk')).Codex
-      const codex = new CodexClass()
+      // An MCP stdio server is started by Codex for this one browser session.
+      // Its bearer token is forwarded through environment variables rather
+      // than the Codex CLI's --config argv, avoiding accidental command-line
+      // disclosure. The bridge checks the token again on every tool call.
+      const mcp = options.mcp
+      const env = { ...process.env }
+      delete env.ELEVENLABS_API_KEY
+      delete env.ANTHROPIC_API_KEY
+      if (mcp?.token) {
+        env.JARVIS_CODEX_TOKEN = mcp.token
+        env.JARVIS_CODEX_PORT = String(mcp.port)
+        env.JARVIS_CODEX_BROWSER = mcp.flags?.browser ? '1' : '0'
+        env.JARVIS_CODEX_CAMERA = mcp.flags?.camera ? '1' : '0'
+        env.JARVIS_CODEX_ACTIONS = mcp.flags?.actions ? '1' : '0'
+      }
+      const codex = new CodexClass(mcp?.token ? {
+        env,
+        config: {
+          mcp_servers: {
+            jarvis: {
+              command: process.execPath,
+              args: [fileURLToPath(new URL('./codex-mcp.mjs', import.meta.url))],
+              env_vars: [
+                'JARVIS_CODEX_TOKEN', 'JARVIS_CODEX_PORT',
+                'JARVIS_CODEX_BROWSER', 'JARVIS_CODEX_CAMERA',
+                'JARVIS_CODEX_ACTIONS',
+              ],
+              startup_timeout_sec: 15,
+              tool_timeout_sec: 75,
+            },
+          },
+        },
+      } : {})
       const thread = codex.startThread({
         workingDirectory: options.cwd,
         skipGitRepoCheck: true,

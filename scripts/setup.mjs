@@ -75,6 +75,7 @@ if (agent === 'codex') {
 
 // --- ~/.claude.json and MCP servers --------------------------------------
 const claudeJsonPath = join(homedir(), '.claude.json');
+if (agent === 'claude') {
 let mcpCount = 0;
 try {
   const raw = readFileSync(claudeJsonPath, 'utf8');
@@ -93,6 +94,8 @@ try {
   }
 } catch {
   line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. JARVIS works without any MCP servers.');
+}
+
 }
 
 // --- ElevenLabs key (env or the elevenlabs MCP entry) --------------------

@@ -31,6 +31,7 @@ type Frame = {
   id?: string
   ask?: string
   reason?: string
+  summary?: string
   mode?: string
   seconds?: number
   when?: string
@@ -181,6 +182,21 @@ function dispatch(ws: WebSocket) {
       onPanel?.(msg.panel)
     } else if (msg.type === 'blade' && msg.blade) {
       onBlade?.(msg.blade)
+    } else if (msg.type === 'approval' && msg.id) {
+      // A fresh user gesture is required for every camera or browser action.
+      // Neither the model nor the MCP process can forge approval; only this
+      // trusted foreground interface can send the affirmative reply.
+      const summary = (msg.summary ?? 'An action').slice(0, 220)
+      let approved = false
+      try {
+        approved = window.confirm(
+          'JARVIS PERMISSION REQUEST\n\n' + summary +
+          '\n\nAllow this single operation?'
+        )
+      } catch { approved = false }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'reply', id: msg.id, approved }))
+      }
     } else if (msg.type === 'capture' && msg.id) {
       const id = msg.id
       const reply = (payload: Record<string, unknown>) => {

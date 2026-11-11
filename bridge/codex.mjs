@@ -1,4 +1,28 @@
 import { fileURLToPath } from 'node:url'
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
+/**
+ * A read-only Codex sandbox does not constrain other MCP tools in the user's
+ * Codex config. Fail closed rather than silently exposing them to voice.
+ */
+export function assertMcpIsolation({ home = process.env.CODEX_HOME || join(homedir(), '.codex'),
+  workspace, trusted = process.env.JARVIS_CODEX_TRUST_EXISTING_MCP === '1' } = {}) {
+  if (trusted) return
+  for (const path of [join(home, 'config.toml'), ...(workspace
+    ? [join(workspace, '.codex', 'config.toml')] : [])]) {
+    let config
+    try { config = readFileSync(path, 'utf8') } catch { continue }
+    if (/^\s*(?:\[\[?\s*mcp_servers(?:\.|\])|mcp_servers\s*=)/m.test(config)) {
+      throw new Error(
+        'Codex has existing MCP servers that bypass the JARVIS approval gate. ' +
+        'Disable them in Codex config, or explicitly set ' +
+        'JARVIS_CODEX_TRUST_EXISTING_MCP=1 after reviewing their permissions.'
+      )
+    }
+  }
+}
 
 /**
  * Codex SDK adapter for the JARVIS WebSocket bridge (experimental).
@@ -39,6 +63,7 @@ export function createCodexSession({ prompt, options = {}, codexFactory } = {}) 
     async *[Symbol.asyncIterator]() {
       if (started) throw new Error('Codex session output may only be consumed once')
       started = true
+      assertMcpIsolation({ workspace: options.cwd })
       const CodexClass = codexFactory ?? (await import('@openai/codex-sdk')).Codex
       // An MCP stdio server is started by Codex for this one browser session.
       // Its bearer token is forwarded through environment variables rather

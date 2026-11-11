@@ -18,9 +18,10 @@
 import { WebSocketServer } from 'ws'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { createCodexSession } from './codex.mjs'
+import { createCodexGateway } from './codex-gateway.mjs'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
-import { chromeAvailable, chromeServer } from './chrome.mjs'
+import { chromeAvailable, chromeServer, codexChromeTool } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
@@ -37,6 +38,12 @@ import {
 } from './policy.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const CODEX_FLAGS = {
+  browser: process.env.JARVIS_CODEX_BROWSER === '1',
+  camera: process.env.JARVIS_CODEX_CAMERA === '1',
+  actions: process.env.JARVIS_CODEX_ACTIONS === '1',
+}
+const CODEX_GATEWAY = createCodexGateway({ chrome: codexChromeTool })
 
 /**
  * Which interface to listen on. Loopback, unless you say otherwise.
@@ -737,6 +744,47 @@ const handleRequest = async (req, res) => {
   }
   const cors = corsFor(req)
 
+  // Internal-only MCP bridge route. No CORS; a one-time token is scoped to the
+  // exact JARVIS WebSocket connection. Require both loopback TCP and the token.
+  if (req.url === '/codex/tool') {
+    const remote = req.socket.remoteAddress
+    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)
+    const authorization = req.headers.authorization ?? ''
+    if (AGENT !== 'codex' || !loopback || req.method !== 'POST' ||
+        typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+      res.writeHead(403, { 'cache-control': 'no-store' })
+      return res.end('forbidden')
+    }
+    let chunks = []
+    let bytes = 0
+    try {
+      for await (const part of req) {
+        bytes += part.length
+        if (bytes > 64 * 1024) {
+          res.writeHead(413)
+          return res.end('payload too large')
+        }
+        chunks.push(part)
+      }
+      const data = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (typeof data?.name !== 'string' || data?.args === null ||
+          typeof data?.args !== 'object' || Array.isArray(data.args)) {
+        res.writeHead(400)
+        return res.end('invalid payload')
+      }
+      const response = await CODEX_GATEWAY.execute(authorization.slice(7), data.name, data.args)
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      return res.end(JSON.stringify(response))
+    } catch {
+      if (!res.headersSent) res.writeHead(400)
+      return res.end('invalid request')
+    }
+  }
+
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors)
     return res.end()
@@ -1297,6 +1345,10 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
+  const codexToken = AGENT === 'codex'
+    ? CODEX_GATEWAY.register({ send, ask, flags: CODEX_FLAGS })
+    : null
+
   const session = AGENT === 'codex'
     ? createCodexSession({
         prompt: userMessages(),
@@ -1306,6 +1358,7 @@ wss.on('connection', (socket) => {
           model: MODEL,
           effort: EFFORT,
           allowWrites: ALLOW_WRITES,
+          mcp: { token: codexToken, port: PORT, flags: CODEX_FLAGS },
         },
       })
     : query({
@@ -1619,5 +1672,6 @@ wss.on('connection', (socket) => {
     closed = true
     deliver?.(null)
     session.close?.()
+    if (codexToken) CODEX_GATEWAY.revoke(codexToken)
   })
 })

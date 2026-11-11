@@ -377,3 +377,8 @@ MIT.
 The boot sound and any tracks in `public/audio/` ship with the project for the
 demo. If you go on to monetise something built on this, clearing the rights to
 that audio is your responsibility.
+
+
+## Experimental Codex backend
+
+This fork includes an experimental Codex SDK backend that uses a Codex CLI login while retaining the existing voice interface and ElevenLabs integration. It exposes a scoped MCP gateway for HUD, browser and camera tools. Browser interaction requires explicit opt-in and a fresh approval for each action. The original Claude backend remains the default. See [docs/CODEX_BACKEND.md](docs/CODEX_BACKEND.md) for Chrome profile setup, consent, limitations and security guidance.

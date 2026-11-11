@@ -1,0 +1,37 @@
+name: Jarvis Codex checks
+
+on:
+  pull_request:
+    paths:
+      - "bridge/**"
+      - "src/lib/bridge.ts"
+      - "tests/**"
+      - "docs/CODEX_BACKEND.md"
+      - ".github/workflows/codex-checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jarvis-codex-ci
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install existing locked dependencies
+        run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Typecheck and web build
+        run: npm run build
+      - name: Lint
+        run: npm run lint

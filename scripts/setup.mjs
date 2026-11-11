@@ -22,6 +22,7 @@ function line(tag, msg) {
 console.log('');
 console.log('JARVIS preflight — checking your machine (nothing is changed)');
 console.log('------------------------------------------------------------');
+const agent = process.env.JARVIS_AGENT === 'codex' ? 'codex' : 'claude';
 
 // --- Node version --------------------------------------------------------
 try {
@@ -35,26 +36,46 @@ try {
   line(warn, 'Could not read the Node.js version. JARVIS needs Node 20 or newer.');
 }
 
-// --- Claude CLI on PATH ---------------------------------------------------
-let claudeFound = false;
-try {
-  const res = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10000 });
-  if (res.status === 0 && res.stdout) {
-    claudeFound = true;
-    line(tick, `Claude CLI found: ${res.stdout.trim()}`);
+// --- Selected agent preflight ---------------------------------------------
+if (agent === 'codex') {
+  let found = false;
+  try {
+    const res = spawnSync('codex', ['--version'], { encoding: 'utf8', timeout: 10000 });
+    if (res.status === 0) {
+      found = true;
+      line(tick, 'Codex CLI found: ' + (res.stdout || res.stderr).trim());
+    }
+  } catch { /* handled below */ }
+  if (!found) {
+    line(warn, 'Codex CLI not found on PATH; install it and run codex login.');
   }
-} catch {
-  // ignore — handled below
-}
-if (!claudeFound) {
-  line(warn, 'Claude CLI not found on your PATH.');
-  line(info, 'Install it: npm install -g @anthropic-ai/claude-code');
-  line(info, '  (or the platform installer at https://docs.claude.com/en/docs/claude-code)');
-  line(info, 'Then run `claude` once and complete login. The bridge uses that login — no API key needed.');
+  try {
+    import.meta.resolve('@openai/codex-sdk');
+    line(tick, '@openai/codex-sdk dependency found.');
+  } catch {
+    line(warn, '@openai/codex-sdk not installed. Run npm install @openai/codex-sdk.');
+  }
+  line(warn, 'Codex mode is experimental and read-only. Audit external MCP servers before use.');
+} else {
+  let claudeFound = false;
+  try {
+    const res = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 10000 });
+    if (res.status === 0 && res.stdout) {
+      claudeFound = true;
+      line(tick, 'Claude CLI found: ' + res.stdout.trim());
+    }
+  } catch { /* handled below */ }
+  if (!claudeFound) {
+    line(warn, 'Claude CLI not found on your PATH.');
+    line(info, 'Install it: npm install -g @anthropic-ai/claude-code');
+    line(info, '  (or the platform installer at https://docs.claude.com/en/docs/claude-code)');
+    line(info, 'Then run claude once and complete login. The bridge uses that login.');
+  }
 }
 
 // --- ~/.claude.json and MCP servers --------------------------------------
 const claudeJsonPath = join(homedir(), '.claude.json');
+if (agent === 'claude') {
 let mcpCount = 0;
 try {
   const raw = readFileSync(claudeJsonPath, 'utf8');
@@ -73,6 +94,8 @@ try {
   }
 } catch {
   line(info, '~/.claude.json not found yet. It appears once you run `claude` and log in. JARVIS works without any MCP servers.');
+}
+
 }
 
 // --- ElevenLabs key (env or the elevenlabs MCP entry) --------------------
@@ -106,11 +129,13 @@ if (elSource) {
 // --- How to run ----------------------------------------------------------
 console.log('');
 console.log('To run JARVIS, open two terminals:');
-console.log('  1)  npm run bridge      # the brain (Claude Code, headless)');
+console.log('  1)  npm run bridge      # the brain (' + (agent === 'codex' ? 'Codex SDK' : 'Claude Code') + ')');
 console.log('  2)  npm run dev         # the face (open http://localhost:5173 in Chrome)');
 console.log('');
 console.log('Then click INITIALISE and say "Hey Jarvis".');
-console.log('To let JARVIS take real actions (phone, browser, sending), run `npm run bridge:writes` instead of `npm run bridge`.');
+console.log(agent === 'codex'
+  ? 'Codex mode is read-only. Do not use bridge:writes until action approvals are implemented.'
+  : 'To let JARVIS take real actions (phone, browser, sending), run npm run bridge:writes instead of npm run bridge.');
 console.log('');
 
 process.exit(0);

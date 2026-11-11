@@ -17,9 +17,12 @@
 
 import { WebSocketServer } from 'ws'
 import { query } from '@anthropic-ai/claude-agent-sdk'
+import { createCodexSession } from './codex.mjs'
+import { createCodexGateway } from './codex-gateway.mjs'
+import { codexCdpTool } from './codex-cdp.mjs'
 import { displayServer } from './panels.mjs'
 import { uiServer } from './ui.mjs'
-import { chromeAvailable, chromeServer } from './chrome.mjs'
+import { chromeAvailable, chromeServer, codexChromeTool } from './chrome.mjs'
 import { visionServer } from './vision.mjs'
 import { homedir, tmpdir } from 'node:os'
 import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
@@ -36,6 +39,18 @@ import {
 } from './policy.mjs'
 
 const PORT = Number(process.env.JARVIS_BRIDGE_PORT ?? 8787)
+const CODEX_FLAGS = {
+  browser: process.env.JARVIS_CODEX_BROWSER === '1',
+  camera: process.env.JARVIS_CODEX_CAMERA === '1',
+  actions: process.env.JARVIS_CODEX_ACTIONS === '1',
+}
+const CODEX_BROWSER_DRIVER = process.env.JARVIS_CODEX_BROWSER_DRIVER ?? 'cdp'
+if (!['cdp', 'native'].includes(CODEX_BROWSER_DRIVER)) {
+  throw new Error('JARVIS_CODEX_BROWSER_DRIVER must be cdp or native')
+}
+const CODEX_GATEWAY = createCodexGateway({
+  chrome: CODEX_BROWSER_DRIVER === 'native' ? codexChromeTool : codexCdpTool,
+})
 
 /**
  * Which interface to listen on. Loopback, unless you say otherwise.
@@ -157,6 +172,9 @@ function hostAllowed(host) {
  */
 const ALLOW_WRITES =
   process.env.JARVIS_ALLOW_WRITES === '1' || process.argv.includes('--writes')
+if (process.env.JARVIS_AGENT === 'codex' && ALLOW_WRITES) {
+  throw new Error('Codex beta is read-only. Remove --writes and JARVIS_ALLOW_WRITES=1.')
+}
 
 /**
  * Built-in capabilities to leave out entirely: `browser` (the user's own
@@ -177,7 +195,11 @@ const DISABLED = new Set(
  * The orchestrator model. Override with JARVIS_MODEL to trade quality for pace
  * — claude-sonnet-5 is noticeably snappier on camera if Opus feels slow.
  */
-const MODEL = process.env.JARVIS_MODEL ?? 'claude-opus-5'
+const AGENT = process.env.JARVIS_AGENT ?? 'claude'
+if (!['claude', 'codex'].includes(AGENT)) {
+  throw new Error(`Unknown JARVIS_AGENT: ${AGENT}. Use claude or codex.`)
+}
+const MODEL = process.env.JARVIS_MODEL ?? (AGENT === 'codex' ? undefined : 'claude-opus-5')
 
 /**
  * How hard the model thinks before answering.
@@ -483,10 +505,10 @@ const PROMPT_TOOLS = `Using tools:
 
 const SYSTEM_PROMPT = [
   PROMPT_CORE,
-  PROMPT_BLADES,
-  DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
-  DISABLED.has('browser') ? '' : PROMPT_BROWSER,
-  DISABLED.has('camera') ? '' : PROMPT_EYES,
+  AGENT === 'codex' ? '' : PROMPT_BLADES,
+  AGENT === 'codex' || DISABLED.has('interface') ? '' : PROMPT_INTERFACE,
+  AGENT === 'codex' || DISABLED.has('browser') ? '' : PROMPT_BROWSER,
+  AGENT === 'codex' || DISABLED.has('camera') ? '' : PROMPT_EYES,
   PROMPT_TOOLS,
 ].join('')
 
@@ -728,6 +750,47 @@ const handleRequest = async (req, res) => {
     return res.end('forbidden')
   }
   const cors = corsFor(req)
+
+  // Internal-only MCP bridge route. No CORS; a one-time token is scoped to the
+  // exact JARVIS WebSocket connection. Require both loopback TCP and the token.
+  if (req.url === '/codex/tool') {
+    const remote = req.socket.remoteAddress
+    const loopback = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote)
+    const authorization = req.headers.authorization ?? ''
+    if (AGENT !== 'codex' || !loopback || req.method !== 'POST' ||
+        typeof authorization !== 'string' || !authorization.startsWith('Bearer ')) {
+      res.writeHead(403, { 'cache-control': 'no-store' })
+      return res.end('forbidden')
+    }
+    let chunks = []
+    let bytes = 0
+    try {
+      for await (const part of req) {
+        bytes += part.length
+        if (bytes > 64 * 1024) {
+          res.writeHead(413)
+          return res.end('payload too large')
+        }
+        chunks.push(part)
+      }
+      const data = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (typeof data?.name !== 'string' || data?.args === null ||
+          typeof data?.args !== 'object' || Array.isArray(data.args)) {
+        res.writeHead(400)
+        return res.end('invalid payload')
+      }
+      const response = await CODEX_GATEWAY.execute(authorization.slice(7), data.name, data.args)
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      return res.end(JSON.stringify(response))
+    } catch {
+      if (!res.headersSent) res.writeHead(400)
+      return res.end('invalid request')
+    }
+  }
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, cors)
@@ -1086,7 +1149,7 @@ if (!LOOPBACK) {
 console.log(
   `[jarvis] speech ${elevenKey() ? 'via ElevenLabs (key from MCP config)' : 'using browser fallback voice'}`,
 )
-console.log(`[jarvis] model ${MODEL} · effort ${EFFORT}`)
+console.log(`[jarvis] agent ${AGENT} · model ${MODEL ?? 'Codex default'} · effort ${EFFORT}`)
 console.log(
   `[jarvis] MCP servers from config: ${Object.keys(MCP_SERVERS).join(', ') || 'none'}` +
     (ACCOUNT_CONNECTORS ? ' · account connectors ON' : ' · account connectors off'),
@@ -1100,7 +1163,7 @@ console.log(
 // at the tool boundary from one that is broken, and this is the one place the
 // difference can be stated before anybody asks a question that depends on it.
 if (DISABLED.size) console.log(`[jarvis] disabled: ${[...DISABLED].join(', ')}`)
-if (!DISABLED.has('browser')) void chromeAvailable().then((ok) => {
+if (AGENT === 'claude' && !DISABLED.has('browser')) void chromeAvailable().then((ok) => {
   console.log(
     ok
       ? `[jarvis] browser control ready${ALLOW_WRITES ? '' : ' (reading only — clicking and typing need JARVIS_ALLOW_WRITES=1)'}`
@@ -1132,7 +1195,7 @@ wss.on('connection', (socket) => {
   // Answer the HUD straight away rather than making it wait for the agent's
   // first turn. Refined later by the real init message.
   socket.send(
-    JSON.stringify({ type: 'ready', servers: Object.keys(MCP_SERVERS) }),
+    JSON.stringify({ type: 'ready', servers: AGENT === 'codex' ? ['jarvis'] : Object.keys(MCP_SERVERS) }),
   )
 
   /** Resolves the pending user message into the SDK's input generator. */
@@ -1289,7 +1352,23 @@ wss.on('connection', (socket) => {
     if (!failed) sendTurn({ type: 'tool', name })
   }
 
-  const session = query({
+  const codexToken = AGENT === 'codex'
+    ? CODEX_GATEWAY.register({ send, ask, flags: CODEX_FLAGS })
+    : null
+
+  const session = AGENT === 'codex'
+    ? createCodexSession({
+        prompt: userMessages(),
+        options: {
+          cwd: WORKSPACE,
+          systemPrompt: SYSTEM_PROMPT,
+          model: MODEL,
+          effort: EFFORT,
+          allowWrites: ALLOW_WRITES,
+          mcp: { token: codexToken, port: PORT, flags: CODEX_FLAGS },
+        },
+      })
+    : query({
     prompt: userMessages(),
     options: {
       // Everything Claude Code has configured, plus the HUD as an in-process
@@ -1600,5 +1679,6 @@ wss.on('connection', (socket) => {
     closed = true
     deliver?.(null)
     session.close?.()
+    if (codexToken) CODEX_GATEWAY.revoke(codexToken)
   })
 })
